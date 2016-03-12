@@ -47,7 +47,7 @@ float convert2BigEndian( const float inFloat )
    return retVal;
 }
 
-void writeVTK(unsigned* currentfield, struct Marginals marginals, int t, char* prefix) 
+void writeVTK(unsigned* currentfield, int w, struct Marginals marginals, int t, char* prefix) 
 {
     int blockWidth = marginals.xend - marginals.xstart, blockHeight = marginals.yend - marginals.ystart; 
     char name[1024] = "\0";
@@ -62,10 +62,10 @@ void writeVTK(unsigned* currentfield, struct Marginals marginals, int t, char* p
     fprintf(outfile,"DATASET STRUCTURED_POINTS\n");     
     fprintf(outfile,"DIMENSIONS %d %d %d \n",  blockWidth, blockHeight, 1);        
     fprintf(outfile,"SPACING 1.0 1.0 1.0\n");//or ASPECT_RATIO                            
-    fprintf(outfile,"ORIGIN %d %d 0\n", marginals.ystart, marginals.xstart);                                              
-    fprintf(outfile,"POINT_DATA %d\n", blockHeight*blockWidth);                                    
-    fprintf(outfile,"SCALARS data float 1\n");                              
-    fprintf(outfile,"LOOKUP_TABLE default\n");         
+    fprintf(outfile,"ORIGIN %d %d 0\n", marginals.xstart-marginals.xstart/blockWidth, marginals.ystart - marginals.ystart/blockHeight);                                              
+    fprintf(outfile,"POINT_DATA %d\n", blockHeight*blockWidth);
+    fprintf(outfile,"SCALARS data float 1\n");
+    fprintf(outfile,"LOOKUP_TABLE default\n");
    
     for (int y = marginals.ystart; y < marginals.yend; y++) {
       for (int x = marginals.xstart; x < marginals.xend; x++) {
@@ -89,31 +89,39 @@ int coutLifingsPeriodic(unsigned* currentfield, int x , int y, int w, int h)
  
 struct Marginals* getMarginals(int w, int h, int horizontalBlocks, int verticalBlocks)
 {
-  struct Marginals* result[horizontalBlocks * verticalBlocks];
+  struct Marginals *result = (struct Marginals*)malloc(horizontalBlocks*verticalBlocks * sizeof(struct Marginals)); 
   double blockHeight = 1.0 * h / verticalBlocks, blockWidth = 1.0 * w / horizontalBlocks;
 
   for (int vertical = 0; vertical < verticalBlocks; vertical++)
   {
     for (int horizontal = 0; horizontal < horizontalBlocks; horizontal++)
     {
-      result[horizontal + vertical * horizontalBlocks] = {round(vertical * blockHeight), round((vertical + 1) * blockHeight), round(horizontal * blockWidth), round((horizontal + 1) * horizontalBlocks)}
+      struct Marginals marginals =
+      {
+        round(vertical * blockHeight),
+        round((vertical + 1) * blockHeight),
+        round(horizontal * blockWidth), 
+        round((horizontal + 1) * blockWidth)     
+      };
+
+      result[horizontal + vertical * horizontalBlocks] = marginals;
+      //{round(vertical * blockHeight), round((vertical + 1) * blockHeight), round(horizontal * blockWidth), round((horizontal + 1) * horizontalBlocks)};
     }
   }
 
   return result;
 }
 
-int evolve(unsigned* currentfield, unsigned* newfield, struct Marginals marginals) 
+int evolve(unsigned* currentfield, unsigned* newfield, int w, int h, struct Marginals marginals) 
 {
   int changes = 0;
-  int blockHeight = h / omp_get_num_threads();
-  int threadnum = omp_get_thread_num();
 
   for (int y = marginals.ystart; y < marginals.yend; y++) 
   {
     for (int x = marginals.xstart; x < marginals.xend; x++) 
     {
       int n = coutLifingsPeriodic(currentfield, x , y, w, h);
+
       if (currentfield[calcIndex(w, x,y)]) 
         n--;
       newfield[calcIndex(w, x,y)] = (n == 3 || (n == 2 && currentfield[calcIndex(w, x,y)]));   
@@ -132,17 +140,17 @@ void game(int w, int h, int timesteps, int horizontalBlocks, int verticalBlocks,
   
   fillFromFile(currentfield, w, h, inputFile);
 
-  struct Marginals marginals[] = getMarginals(w, h, horizontalBlocks, verticalBlocks);
+  struct Marginals *marginals = getMarginals(w, h, horizontalBlocks, verticalBlocks);
 
   for (int t = 0; t < timesteps; t++) 
   {
-    show(currentfield, w, h);
+    //show(currentfield, w, h);
     int changes=0;
     #pragma omp parallel
     {
-      writeVTK(currentfield, marginals[omp_get_thread_num()], t, "out/output");
+      writeVTK(currentfield, w, marginals[omp_get_thread_num()], t, "out/output");
       #pragma omp atomic
-      changes += evolve(currentfield, newfield, marginals[omp_get_thread_num()]);
+      changes += evolve(currentfield, newfield, w, h, marginals[omp_get_thread_num()]);
     }
       if (changes == 0) {
     	sleep(3);
@@ -156,7 +164,11 @@ void game(int w, int h, int timesteps, int horizontalBlocks, int verticalBlocks,
   }
   
   free(currentfield);
+  currentfield = NULL;
   free(newfield);
+  newfield = NULL;
+  free(marginals);
+  marginals = NULL;
 }
  
 int main(int argc, char **argv) 
